@@ -1,0 +1,5 @@
+/* Webapp shell stylesheet — adds Tailwind v4 source paths so utilities used
+   in ../../webview-ui/src are detected, then imports the webview-ui's own
+   index.css (which itself does @import 'tailwindcss'). */
+@source "../../../webview-ui/src";
+@source "../../web/src";

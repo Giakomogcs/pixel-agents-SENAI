@@ -1,0 +1,24 @@
+{
+  "name": "pixel-agents-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "protocol",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm-run-all -p dev:server dev:web",
+    "dev:server": "npm run dev --workspace server",
+    "dev:web": "npm run dev --workspace web",
+    "build": "npm-run-all -s build:protocol build:web build:server",
+    "build:protocol": "npm run build --workspace protocol",
+    "build:web": "npm run build --workspace web",
+    "build:server": "npm run build --workspace server",
+    "start": "npm run start --workspace server"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3"
+  }
+}

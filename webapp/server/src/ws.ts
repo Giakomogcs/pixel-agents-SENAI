@@ -1,0 +1,210 @@
+/**
+ * WebSocket router — receives ClientMessages from the browser and dispatches
+ * to the appropriate subsystem (agents, persistence, OAuth). Per-connection
+ * fan-out is centralized via the broadcaster so the AgentManager doesn't
+ * have to track sockets.
+ */
+
+import type { ClientMessage, ServerMessage } from '@pixel-agents/protocol';
+import type { WebSocket } from '@fastify/websocket';
+
+import type { AgentManager } from './agents.js';
+import type { AssetBundle } from './assets.js';
+import { getOpenCodeClient } from './opencode.js';
+import { APP_VERSION } from './paths.js';
+import {
+  patchConfig,
+  readConfig,
+  readLayout,
+  readLayoutOrDefault,
+  writeLayout,
+} from './persistence.js';
+
+export class WsHub {
+  private sockets = new Set<WebSocket>();
+
+  add(ws: WebSocket): void {
+    this.sockets.add(ws);
+  }
+  remove(ws: WebSocket): void {
+    this.sockets.delete(ws);
+  }
+  broadcast(msg: ServerMessage): void {
+    const payload = JSON.stringify(msg);
+    for (const ws of this.sockets) {
+      try {
+        ws.send(payload);
+      } catch {
+        /* socket closed */
+      }
+    }
+  }
+  send(ws: WebSocket, msg: ServerMessage): void {
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      /* socket closed */
+    }
+  }
+}
+
+interface RouterDeps {
+  hub: WsHub;
+  agents: AgentManager;
+  assets: AssetBundle;
+  assetsDir: string;
+}
+
+export async function handleClientMessage(
+  msg: ClientMessage,
+  ws: WebSocket,
+  deps: RouterDeps,
+): Promise<void> {
+  const { hub, agents, assets, assetsDir } = deps;
+
+  switch (msg.type) {
+    case 'webviewReady': {
+      // Ship the same boot sequence the extension does, in the documented
+      // order: characters → floors → walls → furniture → layout → settings.
+      hub.send(ws, { type: 'characterSpritesLoaded', characters: assets.characters });
+      hub.send(ws, { type: 'floorTilesLoaded', sprites: assets.floorSprites });
+      hub.send(ws, { type: 'wallTilesLoaded', sets: assets.wallSets });
+      hub.send(ws, {
+        type: 'furnitureAssetsLoaded',
+        catalog: assets.catalog,
+        sprites: assets.furnitureSprites,
+      });
+      const layout = await readLayoutOrDefault(assetsDir);
+      hub.send(ws, { type: 'layoutLoaded', layout });
+      const cfg = await readConfig();
+      hub.send(ws, {
+        type: 'settingsLoaded',
+        soundEnabled: cfg.soundEnabled,
+        alwaysShowLabels: cfg.alwaysShowLabels,
+        watchAllSessions: cfg.watchAllSessions,
+        hooksEnabled: cfg.hooksEnabled,
+        hooksInfoShown: cfg.hooksInfoShown,
+        externalAssetDirectories: cfg.externalAssetDirectories,
+        extensionVersion: APP_VERSION,
+        lastSeenVersion: cfg.lastSeenVersion,
+      });
+      hub.send(ws, { type: 'workspaceFolders', folders: [] });
+      agents.emitExisting();
+      const authed = await getOpenCodeClient().isAuthenticated('copilot');
+      hub.send(ws, { type: 'copilotStatus', authenticated: authed });
+      break;
+    }
+
+    case 'openClaude': {
+      // In webapp mode this is "create new agent" (Copilot-backed).
+      await agents.spawn();
+      break;
+    }
+
+    case 'closeAgent': {
+      await agents.close(msg.id);
+      break;
+    }
+
+    case 'sendPrompt': {
+      await agents.sendPrompt(msg.agentId, msg.text);
+      break;
+    }
+
+    case 'focusAgent': {
+      hub.broadcast({ type: 'agentSelected', id: msg.id });
+      break;
+    }
+
+    case 'saveLayout': {
+      await writeLayout(msg.layout);
+      break;
+    }
+
+    case 'saveAgentSeats': {
+      await agents.saveSeats(msg.seats);
+      break;
+    }
+
+    case 'setSoundEnabled':
+      await patchConfig({ soundEnabled: msg.enabled });
+      break;
+    case 'setAlwaysShowLabels':
+      await patchConfig({ alwaysShowLabels: msg.enabled });
+      break;
+    case 'setWatchAllSessions':
+      await patchConfig({ watchAllSessions: msg.enabled });
+      break;
+    case 'setHooksEnabled':
+      await patchConfig({ hooksEnabled: msg.enabled });
+      break;
+    case 'setHooksInfoShown':
+      await patchConfig({ hooksInfoShown: true });
+      break;
+    case 'setLastSeenVersion':
+      await patchConfig({ lastSeenVersion: msg.version });
+      break;
+
+    case 'startCopilotAuth': {
+      try {
+        const r = await getOpenCodeClient().startOAuth('copilot');
+        hub.send(ws, {
+          type: 'copilotAuthCode',
+          userCode: r.userCode,
+          verificationUri: r.verificationUri,
+          expiresIn: r.expiresIn,
+          interval: r.interval,
+        });
+      } catch (err) {
+        hub.send(ws, { type: 'copilotAuthError', error: (err as Error).message });
+      }
+      break;
+    }
+
+    case 'pollCopilotAuth': {
+      try {
+        const done = await getOpenCodeClient().pollOAuth('copilot');
+        if (done) {
+          hub.broadcast({ type: 'copilotAuthComplete' });
+          hub.broadcast({ type: 'copilotStatus', authenticated: true });
+        } else {
+          hub.send(ws, { type: 'copilotAuthPending' });
+        }
+      } catch (err) {
+        hub.send(ws, { type: 'copilotAuthError', error: (err as Error).message });
+      }
+      break;
+    }
+
+    case 'logoutCopilot': {
+      await getOpenCodeClient().logout('copilot');
+      hub.broadcast({ type: 'copilotStatus', authenticated: false });
+      break;
+    }
+
+    case 'getCopilotStatus': {
+      const authed = await getOpenCodeClient().isAuthenticated('copilot');
+      hub.send(ws, { type: 'copilotStatus', authenticated: authed });
+      break;
+    }
+
+    case 'requestDiagnostics':
+    case 'exportLayout':
+    case 'importLayout':
+    case 'addExternalAssetDirectory':
+    case 'removeExternalAssetDirectory':
+    case 'openSessionsFolder':
+      // No-op (or future impl). Prevent runtime errors by acknowledging.
+      hub.send(ws, {
+        type: 'log',
+        level: 'info',
+        message: `[webapp] ${msg.type} not implemented yet`,
+      });
+      break;
+
+    default: {
+      const _exhaustive: never = msg;
+      void _exhaustive;
+    }
+  }
+}
