@@ -13,7 +13,6 @@ interface VsCodeApiShim {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var acquireVsCodeApi: () => VsCodeApiShim;
 }
 

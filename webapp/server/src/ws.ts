@@ -5,8 +5,8 @@
  * have to track sockets.
  */
 
-import type { ClientMessage, ServerMessage } from '@pixel-agents/protocol';
 import type { WebSocket } from '@fastify/websocket';
+import type { ClientMessage, ServerMessage } from '@pixel-agents/protocol';
 
 import type { AgentManager } from './agents.js';
 import type { AssetBundle } from './assets.js';

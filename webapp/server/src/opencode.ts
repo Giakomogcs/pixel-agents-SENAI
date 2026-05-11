@@ -10,9 +10,10 @@
  * the "github-copilot" provider id used by opencode.
  */
 
-import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { createOpencodeClient, createOpencodeServer } from '@opencode-ai/sdk';
 
 import { COPILOT_PROVIDER_ID } from './constants.js';
 
@@ -94,29 +95,37 @@ class RealOpenCodeClient implements OpenCodeClientApi {
   }
 
   async pollOAuth(providerId: string): Promise<boolean> {
+    // First, the cheap & reliable check: is the provider already in the
+    // `connected` list? If so the user finished the flow on github.com and
+    // we don't need to call /callback at all.
+    if (await this.isAuthenticated(providerId)) return true;
+
+    // Otherwise, ping the SDK's callback endpoint. For GitHub device flow
+    // this returns 400 BadRequest while the user hasn't authorized yet —
+    // we treat ALL errors as "not done" rather than throwing, because the
+    // authoritative signal is `connected` above. Only a successful `true`
+    // response means we're done.
     try {
       const res = await this.sdk.provider.oauth.callback({
         path: { id: providerId },
         body: { method: 0 },
       });
-      if (res.error) {
-        const errStr = JSON.stringify(res.error);
-        if (/pending|wait|slow_down/i.test(errStr)) return false;
-        throw new Error(`OAuth callback failed: ${errStr}`);
-      }
-      return res.data === true;
-    } catch (err) {
-      if (/pending|wait|slow_down/i.test((err as Error).message)) return false;
-      throw err;
+      if (res.error) return false;
+      if (res.data === true) return true;
+      // After a callback that returned data===true we expect connected to
+      // update; re-check to be safe.
+      return await this.isAuthenticated(providerId);
+    } catch {
+      return false;
     }
   }
 
   async isAuthenticated(providerId: string): Promise<boolean> {
     try {
       const res = await this.sdk.provider.list();
-      const data = res.data as { providers?: Array<{ id?: string }> } | undefined;
-      const providers = data?.providers ?? [];
-      return providers.some((p) => p.id === providerId);
+      const data = res.data as { connected?: string[] } | undefined;
+      const connected = data?.connected ?? [];
+      return connected.includes(providerId);
     } catch {
       return false;
     }

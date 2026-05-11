@@ -5,14 +5,14 @@
  *  - WS  : protocol bridge between the browser UI and OpenCode
  */
 
-import fastifyStatic from '@fastify/static';
-import fastifyWebsocket from '@fastify/websocket';
-import Fastify from 'fastify';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import type { ClientMessage } from '@pixel-agents/protocol';
+import Fastify from 'fastify';
 
 import { AgentManager } from './agents.js';
 import { loadAssetBundle, resolveAssetsDir } from './assets.js';

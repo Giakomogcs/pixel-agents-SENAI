@@ -42,6 +42,8 @@ function CopilotOverlay() {
   const [authCode, setAuthCode] = useState<AuthCode | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  const [pollSeconds, setPollSeconds] = useState(0);
+  const [copied, setCopied] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [promptText, setPromptText] = useState('');
   const [promptAgentId, setPromptAgentId] = useState<number | null>(null);
@@ -54,6 +56,11 @@ function CopilotOverlay() {
       switch (msg.type) {
         case 'copilotStatus':
           setAuthed(Boolean(msg.authenticated));
+          if (msg.authenticated) {
+            setAuthCode(null);
+            setPolling(false);
+            setAuthError(null);
+          }
           break;
         case 'copilotAuthCode':
           setAuthCode({
@@ -61,6 +68,7 @@ function CopilotOverlay() {
             verificationUri: String(msg.verificationUri ?? 'https://github.com/login/device'),
           });
           setAuthError(null);
+          setPollSeconds(0);
           setPolling(true);
           break;
         case 'copilotAuthPending':
@@ -82,13 +90,17 @@ function CopilotOverlay() {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  // ── poll loop ───────────────────────────────────────────
+  // ── poll loop ───────────────────────────────────────
+  // Poll every 2s for snappy UX. Server checks `provider.list().connected`
+  // on every poll, so as soon as the user finishes the GitHub flow we
+  // detect it within ~2s.
   useEffect(() => {
     if (!polling) return;
-    const id = setInterval(() => {
+    const tick = setInterval(() => {
+      setPollSeconds((s) => s + 2);
       vsApi().postMessage({ type: 'pollCopilotAuth' });
-    }, 5000);
-    return () => clearInterval(id);
+    }, 2000);
+    return () => clearInterval(tick);
   }, [polling]);
 
   // ── prompt-input keyboard shortcut: "P" focuses the floating prompt
@@ -151,21 +163,50 @@ function CopilotOverlay() {
           <div style={modalBox}>
             <h2 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Sign in to GitHub Copilot</h2>
             <p style={{ margin: '0 0 8px 0', fontSize: 11 }}>
-              1. Open{' '}
-              <a href={authCode.verificationUri} target="_blank" rel="noreferrer" style={{ color: '#7ee787' }}>
-                {authCode.verificationUri}
-              </a>
+              1. Click the button below to open GitHub.
             </p>
-            <p style={{ margin: '0 0 12px 0', fontSize: 11 }}>2. Enter this code:</p>
-            <div style={codeBox}>{authCode.userCode}</div>
+            <p style={{ margin: '0 0 12px 0', fontSize: 11 }}>2. Paste this code on the GitHub page:</p>
+            <div
+              style={{ ...codeBox, cursor: 'pointer' }}
+              title="Click to copy"
+              onClick={() => {
+                void navigator.clipboard.writeText(authCode.userCode);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              {authCode.userCode}
+            </div>
             <p style={{ margin: '12px 0 0 0', fontSize: 10, opacity: 0.7 }}>
-              Polling for confirmation…
+              {polling
+                ? `Waiting for you to authorize on GitHub… (${pollSeconds.toString()}s)`
+                : 'Polling stopped.'}
             </p>
-            {authError && <p style={{ color: '#ff8080', fontSize: 10, margin: '8px 0 0 0' }}>{authError}</p>}
-            <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <button style={btn} onClick={() => navigator.clipboard.writeText(authCode.userCode)}>
+            {copied && (
+              <p style={{ color: '#7ee787', fontSize: 10, margin: '4px 0 0 0' }}>Code copied!</p>
+            )}
+            {authError && (
+              <p style={{ color: '#ff8080', fontSize: 10, margin: '8px 0 0 0' }}>{authError}</p>
+            )}
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                style={btn}
+                onClick={() => {
+                  void navigator.clipboard.writeText(authCode.userCode);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }}
+              >
                 Copy code
-              </button>{' '}
+              </button>
+              <a
+                href={authCode.verificationUri}
+                target="_blank"
+                rel="noreferrer"
+                style={{ ...btn, background: '#2d4a3a', textDecoration: 'none', color: '#cdd6f4' }}
+              >
+                Open GitHub ↗
+              </a>
               <button
                 style={btn}
                 onClick={() => {

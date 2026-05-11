@@ -6,7 +6,7 @@
 
 import type { ServerMessage } from '@pixel-agents/protocol';
 
-import { COPILOT_PROVIDER_ID, COPILOT_DEFAULT_MODEL } from './constants.js';
+import { COPILOT_DEFAULT_MODEL,COPILOT_PROVIDER_ID } from './constants.js';
 import { getOpenCodeClient, type OpenCodeEvent, type OpenCodeSession } from './opencode.js';
 import { type AgentsState, readAgents, writeAgents } from './persistence.js';
 
