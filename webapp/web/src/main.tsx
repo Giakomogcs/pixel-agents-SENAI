@@ -16,6 +16,7 @@
 import './index.css';
 import { installWsBridge } from './wsBridge.ts';
 import { mountCopilotOverlay } from './CopilotOverlay.tsx';
+import { mountChatPanel } from './ChatPanel.tsx';
 
 installWsBridge();
 
@@ -25,5 +26,6 @@ await import('@webview/main.tsx');
 
 // Mount our overlay AFTER the webview-ui has rendered into #root.
 mountCopilotOverlay();
+mountChatPanel();
 
 export {};

@@ -37,6 +37,17 @@ interface AuthCode {
   verificationUri: string;
 }
 
+interface ModelInfo {
+  id: string;
+  name: string;
+}
+
+interface ProviderInfo {
+  id: string;
+  name: string;
+  models: ModelInfo[];
+}
+
 function CopilotOverlay() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [authCode, setAuthCode] = useState<AuthCode | null>(null);
@@ -47,6 +58,17 @@ function CopilotOverlay() {
   const [promptOpen, setPromptOpen] = useState(false);
   const [promptText, setPromptText] = useState('');
   const [promptAgentId, setPromptAgentId] = useState<number | null>(null);
+
+  // Create-agent modal state
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createPrompt, setCreatePrompt] = useState('');
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState<string>('');
+  const [selectedModelId, setSelectedModelId] = useState<string>('');
+
+  // Map agentId → display name (from agentCreated/existingAgents)
+  const [agentNames, setAgentNames] = useState<Record<number, string>>({});
 
   // ── message listener ────────────────────────────────────
   useEffect(() => {
@@ -83,10 +105,57 @@ function CopilotOverlay() {
           setPolling(false);
           setAuthed(true);
           break;
+        case 'modelsLoaded': {
+          const provs = (msg.providers ?? []) as ProviderInfo[];
+          setProviders(provs);
+          const defProv = String(msg.defaultProviderId ?? provs[0]?.id ?? '');
+          const defModel = String(msg.defaultModelId ?? '');
+          setSelectedProviderId((cur) => cur || defProv);
+          setSelectedModelId((cur) => {
+            if (cur) return cur;
+            const provider = provs.find((p) => p.id === defProv) ?? provs[0];
+            return defModel || provider?.models[0]?.id || '';
+          });
+          break;
+        }
+        case 'agentCreated': {
+          const id = Number(msg.id);
+          const name = String(msg.folderName ?? msg.name ?? '');
+          if (Number.isFinite(id) && name) {
+            setAgentNames((prev) => ({ ...prev, [id]: name }));
+          }
+          break;
+        }
+        case 'existingAgents': {
+          const folderNames = (msg.folderNames ?? {}) as Record<string, string>;
+          if (folderNames && Object.keys(folderNames).length > 0) {
+            setAgentNames((prev) => {
+              const next = { ...prev };
+              for (const [k, v] of Object.entries(folderNames)) {
+                next[Number(k)] = v;
+              }
+              return next;
+            });
+          }
+          break;
+        }
+        case 'agentClosed': {
+          const id = Number(msg.id);
+          if (Number.isFinite(id)) {
+            setAgentNames((prev) => {
+              if (!(id in prev)) return prev;
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+          }
+          break;
+        }
       }
     }
     window.addEventListener('message', onMessage);
     vsApi().postMessage({ type: 'getCopilotStatus' });
+    vsApi().postMessage({ type: 'listModels' });
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
@@ -113,12 +182,25 @@ function CopilotOverlay() {
       setPromptAgentId(detail.agentId);
       setPromptOpen(true);
     }
+    function onCreateAgent() {
+      // Refresh model list every time so newly authenticated providers appear.
+      vsApi().postMessage({ type: 'listModels' });
+      setCreateName('');
+      setCreatePrompt('');
+      setCreateOpen(true);
+    }
     window.addEventListener('pixel-agents:openPrompt' as keyof WindowEventMap, onOpenPrompt as EventListener);
-    return () =>
+    window.addEventListener('pixel-agents:createAgent' as keyof WindowEventMap, onCreateAgent as EventListener);
+    return () => {
       window.removeEventListener(
         'pixel-agents:openPrompt' as keyof WindowEventMap,
         onOpenPrompt as EventListener,
       );
+      window.removeEventListener(
+        'pixel-agents:createAgent' as keyof WindowEventMap,
+        onCreateAgent as EventListener,
+      );
+    };
   }, []);
 
   function startLogin() {
@@ -137,6 +219,27 @@ function CopilotOverlay() {
     setPromptText('');
     setPromptOpen(false);
   }
+
+  function submitCreate() {
+    if (!authed) {
+      setAuthError('Sign in to GitHub Copilot first.');
+      startLogin();
+      return;
+    }
+    if (!selectedProviderId || !selectedModelId) return;
+    vsApi().postMessage({
+      type: 'createAgent',
+      name: createName.trim() || undefined,
+      prompt: createPrompt.trim() || undefined,
+      providerId: selectedProviderId,
+      modelId: selectedModelId,
+    });
+    setCreateOpen(false);
+    setCreateName('');
+    setCreatePrompt('');
+  }
+
+  const currentProvider = providers.find((p) => p.id === selectedProviderId);
 
   return (
     <>
@@ -226,7 +329,9 @@ function CopilotOverlay() {
         <div style={modalBackdrop} onClick={() => setPromptOpen(false)}>
           <div style={modalBox} onClick={(e) => e.stopPropagation()}>
             <h2 style={{ margin: '0 0 12px 0', fontSize: 14 }}>
-              Send prompt to Agent #{promptAgentId}
+              Send prompt to {promptAgentId != null && agentNames[promptAgentId]
+                ? agentNames[promptAgentId]
+                : `Agent #${promptAgentId ?? ''}`}
             </h2>
             <textarea
               autoFocus
@@ -247,6 +352,95 @@ function CopilotOverlay() {
               </button>{' '}
               <button style={{ ...btn, background: '#2d4a3a' }} onClick={submitPrompt}>
                 Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create agent modal */}
+      {createOpen && (
+        <div style={modalBackdrop} onClick={() => setCreateOpen(false)}>
+          <div
+            style={{ ...modalBox, minWidth: 420 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Create new agent</h2>
+
+            <label style={labelStyle}>Name</label>
+            <input
+              autoFocus
+              value={createName}
+              onChange={(e) => setCreateName(e.target.value)}
+              placeholder={`Agent ${(providers.length ? '' : '')}name (optional)`}
+              style={inputStyle}
+            />
+
+            <label style={labelStyle}>Provider</label>
+            <select
+              value={selectedProviderId}
+              onChange={(e) => {
+                const pid = e.target.value;
+                setSelectedProviderId(pid);
+                const next = providers.find((p) => p.id === pid);
+                setSelectedModelId(next?.models[0]?.id ?? '');
+              }}
+              style={selectStyle}
+            >
+              {providers.length === 0 && <option value="">(loading…)</option>}
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+
+            <label style={labelStyle}>Model</label>
+            <select
+              value={selectedModelId}
+              onChange={(e) => setSelectedModelId(e.target.value)}
+              style={selectStyle}
+            >
+              {(currentProvider?.models ?? []).length === 0 && (
+                <option value="">(no models)</option>
+              )}
+              {currentProvider?.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+
+            <label style={labelStyle}>Initial prompt (optional)</label>
+            <textarea
+              value={createPrompt}
+              onChange={(e) => setCreatePrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  submitCreate();
+                }
+              }}
+              placeholder="Type the agent's first prompt… (Ctrl+Enter to create)"
+              style={textareaStyle}
+            />
+
+            {!authed && (
+              <p style={{ color: '#f0a020', fontSize: 10, margin: '8px 0 0 0' }}>
+                Not signed in to Copilot — clicking Create will start the sign-in flow.
+              </p>
+            )}
+
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <button style={btn} onClick={() => setCreateOpen(false)}>
+                Cancel
+              </button>{' '}
+              <button
+                style={{ ...btn, background: '#2d4a3a' }}
+                onClick={submitCreate}
+                disabled={!selectedProviderId || !selectedModelId}
+              >
+                Create
               </button>
             </div>
           </div>
@@ -328,6 +522,29 @@ const textareaStyle: React.CSSProperties = {
   padding: 8,
   resize: 'vertical',
   boxSizing: 'border-box',
+};
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  background: '#0a0a14',
+  border: '2px solid #444',
+  color: '#cdd6f4',
+  fontFamily: 'monospace',
+  fontSize: 12,
+  padding: 6,
+  boxSizing: 'border-box',
+};
+const selectStyle: React.CSSProperties = {
+  ...inputStyle,
+  appearance: 'none',
+  cursor: 'pointer',
+};
+const labelStyle: React.CSSProperties = {
+  display: 'block',
+  margin: '10px 0 4px 0',
+  fontSize: 10,
+  opacity: 0.8,
+  textTransform: 'uppercase',
+  letterSpacing: 1,
 };
 
 export function mountCopilotOverlay() {

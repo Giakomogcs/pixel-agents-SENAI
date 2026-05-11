@@ -15,9 +15,17 @@ export type ClientMessage =
 
   // Agent control
   | { type: 'openClaude'; folderPath?: string; bypassPermissions?: boolean }
+  | {
+      type: 'createAgent';
+      name?: string;
+      prompt?: string;
+      providerId: string;
+      modelId: string;
+    }
   | { type: 'focusAgent'; id: number }
   | { type: 'closeAgent'; id: number }
   | { type: 'sendPrompt'; agentId: number; text: string }
+  | { type: 'listModels' }
 
   // Layout / persistence
   | { type: 'saveLayout'; layout: unknown }
@@ -66,11 +74,36 @@ export type ServerMessage =
   | { type: 'externalAssetDirectoriesUpdated'; dirs: string[] }
 
   // Agent lifecycle
-  | { type: 'agentCreated'; id: number; name: string; palette?: number; hueShift?: number; seatId?: string | null }
+  | {
+      type: 'agentCreated';
+      id: number;
+      name: string;
+      folderName?: string;
+      palette?: number;
+      hueShift?: number;
+      seatId?: string | null;
+      providerId?: string;
+      modelId?: string;
+    }
   | { type: 'agentClosed'; id: number }
-  | { type: 'existingAgents'; agents: { id: number; name: string; palette?: number; hueShift?: number; seatId?: string | null }[] }
+  | {
+      type: 'existingAgents';
+      agents: number[];
+      agentMeta?: Record<number, { palette?: number; hueShift?: number; seatId?: string | null }>;
+      folderNames?: Record<number, string>;
+    }
   | { type: 'agentSelected'; id: number | null }
   | { type: 'agentStatus'; id: number; status: 'active' | 'waiting' | 'idle' }
+  | {
+      type: 'modelsLoaded';
+      providers: {
+        id: string;
+        name: string;
+        models: { id: string; name: string }[];
+      }[];
+      defaultProviderId: string;
+      defaultModelId: string;
+    }
 
   // Tools
   | { type: 'agentToolStart'; id: number; toolId: string; tool: string; input?: unknown; status?: string }
@@ -94,6 +127,8 @@ export type ServerMessage =
 
   // Misc
   | { type: 'agentPrompt'; agentId: number; text: string }
+  | { type: 'agentMessage'; agentId: number; role: 'user' | 'assistant'; text: string; final?: boolean }
+  | { type: 'agentTurnEnd'; agentId: number }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type AnyMessage = ClientMessage | ServerMessage;

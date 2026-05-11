@@ -18,6 +18,15 @@ export interface RuntimeAgent {
   palette: number;
   hueShift: number;
   seatId: string | null;
+  providerId: string;
+  modelId: string;
+}
+
+export interface SpawnOptions {
+  name?: string;
+  prompt?: string;
+  providerId?: string;
+  modelId?: string;
 }
 
 type Broadcast = (msg: ServerMessage) => void;
@@ -69,6 +78,8 @@ export class AgentManager {
         palette: persisted.palette,
         hueShift: persisted.hueShift,
         seatId: persisted.seatId,
+        providerId: persisted.providerId ?? COPILOT_PROVIDER_ID,
+        modelId: persisted.modelId ?? COPILOT_DEFAULT_MODEL,
       };
       this.agents.set(agent.id, agent);
       agent.unsubscribe = client.onEvent(sessionId, (e) => this.handleEvent(agent, e));
@@ -83,19 +94,21 @@ export class AgentManager {
   }
 
   emitExisting(): void {
+    const agentMeta: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
+    const folderNames: Record<number, string> = {};
+    for (const a of this.state.agents) {
+      agentMeta[a.id] = { palette: a.palette, hueShift: a.hueShift, seatId: a.seatId };
+      folderNames[a.id] = a.name;
+    }
     this.broadcast({
       type: 'existingAgents',
-      agents: this.state.agents.map((a) => ({
-        id: a.id,
-        name: a.name,
-        palette: a.palette,
-        hueShift: a.hueShift,
-        seatId: a.seatId,
-      })),
+      agents: this.state.agents.map((a) => a.id),
+      agentMeta,
+      folderNames,
     });
   }
 
-  async spawn(): Promise<RuntimeAgent | null> {
+  async spawn(opts: SpawnOptions = {}): Promise<RuntimeAgent | null> {
     const client = getOpenCodeClient();
     if (!(await client.isAuthenticated(COPILOT_PROVIDER_ID))) {
       this.broadcast({
@@ -107,9 +120,13 @@ export class AgentManager {
     }
 
     const id = this.state.nextId++;
+    const name = (opts.name?.trim() || `Agent ${id.toString()}`);
+    const providerId = opts.providerId || COPILOT_PROVIDER_ID;
+    const modelId = opts.modelId || COPILOT_DEFAULT_MODEL;
+
     let session: OpenCodeSession;
     try {
-      session = await client.createSession({ title: `Agent ${id.toString()}` });
+      session = await client.createSession({ title: name });
     } catch (err) {
       this.broadcast({
         type: 'log',
@@ -121,12 +138,14 @@ export class AgentManager {
 
     const agent: RuntimeAgent = {
       id,
-      name: `Agent ${id.toString()}`,
+      name,
       session,
       unsubscribe: () => undefined,
       palette: id % 6,
       hueShift: 0,
       seatId: null,
+      providerId,
+      modelId,
     };
     this.agents.set(id, agent);
 
@@ -139,6 +158,8 @@ export class AgentManager {
       palette: agent.palette,
       hueShift: agent.hueShift,
       seatId: agent.seatId,
+      providerId: agent.providerId,
+      modelId: agent.modelId,
     });
     await writeAgents(this.state);
 
@@ -146,10 +167,33 @@ export class AgentManager {
       type: 'agentCreated',
       id: agent.id,
       name: agent.name,
+      folderName: agent.name,
       palette: agent.palette,
       hueShift: agent.hueShift,
       seatId: agent.seatId,
+      providerId: agent.providerId,
+      modelId: agent.modelId,
     });
+
+    const initialPrompt = opts.prompt?.trim();
+    if (initialPrompt) {
+      this.broadcast({
+        type: 'log',
+        level: 'info',
+        message: `Sending initial prompt to "${name}" via ${providerId}/${modelId} (${initialPrompt.length.toString()} chars)`,
+      });
+      this.broadcast({ type: 'agentMessage', agentId: agent.id, role: 'user', text: initialPrompt, final: true });
+      try {
+        await client.sendPrompt(session.id, initialPrompt, { providerId, modelId });
+        this.broadcast({ type: 'agentStatus', id: agent.id, status: 'active' });
+      } catch (err) {
+        this.broadcast({
+          type: 'log',
+          level: 'error',
+          message: `Initial prompt failed for "${name}" (${providerId}/${modelId}): ${(err as Error).message}`,
+        });
+      }
+    }
     return agent;
   }
 
@@ -171,12 +215,28 @@ export class AgentManager {
 
   async sendPrompt(id: number, text: string): Promise<void> {
     const agent = this.agents.get(id);
-    if (!agent) return;
-    await getOpenCodeClient().sendPrompt(agent.session.id, text, {
-      providerId: COPILOT_PROVIDER_ID,
-      modelId: COPILOT_DEFAULT_MODEL,
-    });
-    this.broadcast({ type: 'agentStatus', id, status: 'active' });
+    if (!agent) {
+      this.broadcast({
+        type: 'log',
+        level: 'warn',
+        message: `sendPrompt: no live agent with id ${id.toString()}`,
+      });
+      return;
+    }
+    this.broadcast({ type: 'agentMessage', agentId: id, role: 'user', text, final: true });
+    try {
+      await getOpenCodeClient().sendPrompt(agent.session.id, text, {
+        providerId: agent.providerId,
+        modelId: agent.modelId,
+      });
+      this.broadcast({ type: 'agentStatus', id, status: 'active' });
+    } catch (err) {
+      this.broadcast({
+        type: 'log',
+        level: 'error',
+        message: `Prompt failed for "${agent.name}" (${agent.providerId}/${agent.modelId}): ${(err as Error).message}`,
+      });
+    }
   }
 
   async saveSeats(
@@ -231,9 +291,20 @@ export class AgentManager {
       case 'turn_end':
         this.broadcast({ type: 'agentToolsClear', id: agent.id });
         this.broadcast({ type: 'agentStatus', id: agent.id, status: 'waiting' });
+        this.broadcast({ type: 'agentMessage', agentId: agent.id, role: 'assistant', text: '', final: true });
+        this.broadcast({ type: 'agentTurnEnd', agentId: agent.id });
         break;
       case 'text_delta':
-        // Future: forward streaming text to a chat panel.
+        // Stream assistant text deltas to the chat panel. The webview
+        // accumulates them keyed by agentId until `final: true` lands.
+        if (e.text) {
+          this.broadcast({
+            type: 'agentMessage',
+            agentId: agent.id,
+            role: 'assistant',
+            text: e.text,
+          });
+        }
         break;
     }
   }

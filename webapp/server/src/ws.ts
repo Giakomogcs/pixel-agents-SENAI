@@ -107,8 +107,41 @@ export async function handleClientMessage(
     }
 
     case 'openClaude': {
-      // In webapp mode this is "create new agent" (Copilot-backed).
+      // Legacy "+ Agent" path — spawn with defaults. Newer UI uses createAgent.
       await agents.spawn();
+      break;
+    }
+
+    case 'createAgent': {
+      await agents.spawn({
+        name: msg.name,
+        prompt: msg.prompt,
+        providerId: msg.providerId,
+        modelId: msg.modelId,
+      });
+      break;
+    }
+
+    case 'listModels': {
+      const client = tryGetClient();
+      if (!client) {
+        // Send a minimal fallback so the UI is not stuck.
+        hub.send(ws, {
+          type: 'modelsLoaded',
+          providers: [
+            {
+              id: COPILOT_PROVIDER_ID,
+              name: 'GitHub Copilot',
+              models: [{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }],
+            },
+          ],
+          defaultProviderId: COPILOT_PROVIDER_ID,
+          defaultModelId: 'claude-sonnet-4',
+        });
+        break;
+      }
+      const info = await client.listProviders();
+      hub.send(ws, { type: 'modelsLoaded', ...info });
       break;
     }
 

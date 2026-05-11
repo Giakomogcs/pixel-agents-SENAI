@@ -46,11 +46,19 @@ export type OpenCodeEvent =
 
 export type OpenCodeEventHandler = (e: OpenCodeEvent) => void;
 
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  models: { id: string; name: string }[];
+}
+
 export interface OpenCodeClientApi {
   startOAuth(providerId: string): Promise<OAuthAuthorizeResult>;
   pollOAuth(providerId: string): Promise<boolean>;
   isAuthenticated(providerId: string): Promise<boolean>;
   logout(providerId: string): Promise<void>;
+
+  listProviders(): Promise<{ providers: ProviderInfo[]; defaultProviderId: string; defaultModelId: string }>;
 
   createSession(opts?: { title?: string }): Promise<OpenCodeSession>;
   sendPrompt(
@@ -140,6 +148,69 @@ class RealOpenCodeClient implements OpenCodeClientApi {
     );
   }
 
+  // ── Providers / models ─────────────────────────────────────────
+
+  async listProviders(): Promise<{
+    providers: ProviderInfo[];
+    defaultProviderId: string;
+    defaultModelId: string;
+  }> {
+    let providers: ProviderInfo[] = [];
+    let defaultProviderId = COPILOT_PROVIDER_ID;
+    let defaultModelId = 'claude-sonnet-4';
+    try {
+      const res = await this.sdk.provider.list();
+      const data = res.data as
+        | {
+            all?: { id: string; name: string; models?: Record<string, { id?: string; name?: string }> }[];
+            default?: Record<string, string>;
+            connected?: string[];
+          }
+        | undefined;
+
+      const all = data?.all ?? [];
+      const connected = new Set(data?.connected ?? []);
+      const def = data?.default ?? {};
+
+      // Only surface providers that are authenticated. Falls back to all if
+      // the server doesn't report `connected` (older builds).
+      const visible = connected.size > 0 ? all.filter((p) => connected.has(p.id)) : all;
+
+      providers = visible.map((p) => {
+        const models = Object.entries(p.models ?? {}).map(([mKey, m]) => ({
+          id: m?.id ?? mKey,
+          name: m?.name ?? m?.id ?? mKey,
+        }));
+        return { id: p.id, name: p.name, models };
+      });
+
+      // Pick a sensible default: prefer Copilot if connected, else the first.
+      const preferred = providers.find((p) => p.id === COPILOT_PROVIDER_ID) ?? providers[0];
+      if (preferred) {
+        defaultProviderId = preferred.id;
+        defaultModelId =
+          def[preferred.id] ??
+          preferred.models.find((m) => /sonnet/i.test(m.id))?.id ??
+          preferred.models[0]?.id ??
+          defaultModelId;
+      }
+    } catch (err) {
+      console.warn('[opencode] listProviders failed:', err);
+    }
+
+    if (providers.length === 0) {
+      // Fallback so the UI is still usable before/without OpenCode being fully ready.
+      providers = [
+        {
+          id: COPILOT_PROVIDER_ID,
+          name: 'GitHub Copilot',
+          models: [{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }],
+        },
+      ];
+    }
+    return { providers, defaultProviderId, defaultModelId };
+  }
+
   // ── Sessions ─────────────────────────────────────────────────────────────
 
   async createSession(opts: { title?: string } = {}): Promise<OpenCodeSession> {
@@ -176,10 +247,23 @@ class RealOpenCodeClient implements OpenCodeClientApi {
     if (opts.providerId && opts.modelId) {
       body.model = { providerID: opts.providerId, modelID: opts.modelId };
     }
-    // Don't await the entire turn — events stream via SSE.
-    void this.sdk.session.prompt({ path: { id: sessionId }, body }).catch((err) => {
+    // Don't await the entire turn — events stream via SSE. But we DO need to
+    // await the HTTP request itself so failures (bad model id, missing auth,
+    // 400/404) propagate to the caller, who logs them to the UI. The SDK
+    // doesn't reject on error; it returns { data, error }.
+    try {
+      const res = (await this.sdk.session.prompt({ path: { id: sessionId }, body })) as {
+        error?: unknown;
+        data?: unknown;
+      };
+      if (res.error) {
+        const errStr = typeof res.error === 'string' ? res.error : JSON.stringify(res.error);
+        throw new Error(`session.prompt error: ${errStr}`);
+      }
+    } catch (err) {
       console.error(`[opencode] prompt failed for ${sessionId}:`, err);
-    });
+      throw err;
+    }
   }
 
   onEvent(sessionId: string, handler: OpenCodeEventHandler): () => void {

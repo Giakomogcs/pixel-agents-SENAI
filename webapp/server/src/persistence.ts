@@ -28,10 +28,56 @@ async function readJson<T>(file: string): Promise<T | null> {
 }
 
 async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
+  // Serialize per-destination so two concurrent writes (e.g. agentCreated +
+  // saveAgentSeats arriving back-to-back) don't race on the same target.
+  const prev = writeQueue.get(file) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    .then(() => doWriteJsonAtomic(file, data));
+  writeQueue.set(file, next);
+  try {
+    await next;
+  } finally {
+    if (writeQueue.get(file) === next) writeQueue.delete(file);
+  }
+}
+
+const writeQueue = new Map<string, Promise<void>>();
+
+async function doWriteJsonAtomic(file: string, data: unknown): Promise<void> {
   await ensureDir();
-  const tmp = `${file}.${process.pid}.tmp`;
+  const uniq = `${process.pid.toString()}.${Date.now().toString()}.${Math.random().toString(36).slice(2)}`;
+  const tmp = `${file}.${uniq}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  // On Windows, fs.rename can fail with EPERM/EBUSY if another process
+  // (e.g. the VS Code extension watcher or an editor) momentarily holds
+  // the destination. Retry a few times with backoff before falling back to
+  // a non-atomic copy + unlink.
+  const maxAttempts = 6;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      await fs.rename(tmp, file);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EEXIST') || i === maxAttempts - 1) {
+        if (code === 'EPERM' || code === 'EBUSY') {
+          // Last-ditch fallback: copy then delete tmp.
+          try {
+            await fs.copyFile(tmp, file);
+            await fs.unlink(tmp).catch(() => undefined);
+            return;
+          } catch (fallbackErr) {
+            await fs.unlink(tmp).catch(() => undefined);
+            throw fallbackErr;
+          }
+        }
+        await fs.unlink(tmp).catch(() => undefined);
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 30 * (i + 1)));
+    }
+  }
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -108,6 +154,8 @@ export interface PersistedAgent {
   palette: number;
   hueShift: number;
   seatId: string | null;
+  providerId?: string;
+  modelId?: string;
 }
 
 export interface AgentsState {
