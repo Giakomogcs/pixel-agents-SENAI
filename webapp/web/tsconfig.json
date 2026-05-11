@@ -13,7 +13,11 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "types": ["vite/client"],
+    "paths": {
+      "@webview/*": ["../../webview-ui/src/*"]
+    }
   },
   "include": ["src", "../../webview-ui/src"]
 }

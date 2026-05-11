@@ -15,11 +15,15 @@
 
 import './index.css';
 import { installWsBridge } from './wsBridge.ts';
+import { mountCopilotOverlay } from './CopilotOverlay.tsx';
 
 installWsBridge();
 
 // Import the webview-ui's main.tsx by path so its useEffect hooks run.
 // The dynamic import happens AFTER acquireVsCodeApi is installed.
 await import('@webview/main.tsx');
+
+// Mount our overlay AFTER the webview-ui has rendered into #root.
+mountCopilotOverlay();
 
 export {};

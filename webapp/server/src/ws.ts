@@ -10,8 +10,18 @@ import type { WebSocket } from '@fastify/websocket';
 
 import type { AgentManager } from './agents.js';
 import type { AssetBundle } from './assets.js';
-import { getOpenCodeClient } from './opencode.js';
+import { COPILOT_PROVIDER_ID } from './constants.js';
+import { getOpenCodeClient, type OpenCodeClientApi } from './opencode.js';
 import { APP_VERSION } from './paths.js';
+
+/** Safely fetch the OpenCode client; returns null if it's still booting. */
+function tryGetClient(): OpenCodeClientApi | null {
+  try {
+    return getOpenCodeClient();
+  } catch {
+    return null;
+  }
+}
 import {
   patchConfig,
   readConfig,
@@ -90,7 +100,8 @@ export async function handleClientMessage(
       });
       hub.send(ws, { type: 'workspaceFolders', folders: [] });
       agents.emitExisting();
-      const authed = await getOpenCodeClient().isAuthenticated('copilot');
+      const authClient = tryGetClient();
+      const authed = authClient ? await authClient.isAuthenticated(COPILOT_PROVIDER_ID) : false;
       hub.send(ws, { type: 'copilotStatus', authenticated: authed });
       break;
     }
@@ -146,14 +157,19 @@ export async function handleClientMessage(
       break;
 
     case 'startCopilotAuth': {
+      const client = tryGetClient();
+      if (!client) {
+        hub.send(ws, { type: 'copilotAuthError', error: 'OpenCode runtime is still starting up. Try again in a moment.' });
+        break;
+      }
       try {
-        const r = await getOpenCodeClient().startOAuth('copilot');
+        const r = await client.startOAuth(COPILOT_PROVIDER_ID);
         hub.send(ws, {
           type: 'copilotAuthCode',
           userCode: r.userCode,
           verificationUri: r.verificationUri,
-          expiresIn: r.expiresIn,
-          interval: r.interval,
+          expiresIn: 900,
+          interval: 5,
         });
       } catch (err) {
         hub.send(ws, { type: 'copilotAuthError', error: (err as Error).message });
@@ -162,8 +178,13 @@ export async function handleClientMessage(
     }
 
     case 'pollCopilotAuth': {
+      const client = tryGetClient();
+      if (!client) {
+        hub.send(ws, { type: 'copilotAuthPending' });
+        break;
+      }
       try {
-        const done = await getOpenCodeClient().pollOAuth('copilot');
+        const done = await client.pollOAuth(COPILOT_PROVIDER_ID);
         if (done) {
           hub.broadcast({ type: 'copilotAuthComplete' });
           hub.broadcast({ type: 'copilotStatus', authenticated: true });
@@ -177,13 +198,15 @@ export async function handleClientMessage(
     }
 
     case 'logoutCopilot': {
-      await getOpenCodeClient().logout('copilot');
+      const client = tryGetClient();
+      if (client) await client.logout(COPILOT_PROVIDER_ID);
       hub.broadcast({ type: 'copilotStatus', authenticated: false });
       break;
     }
 
     case 'getCopilotStatus': {
-      const authed = await getOpenCodeClient().isAuthenticated('copilot');
+      const client = tryGetClient();
+      const authed = client ? await client.isAuthenticated(COPILOT_PROVIDER_ID) : false;
       hub.send(ws, { type: 'copilotStatus', authenticated: authed });
       break;
     }

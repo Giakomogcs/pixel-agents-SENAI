@@ -16,6 +16,7 @@ import type { ClientMessage } from '@pixel-agents/protocol';
 
 import { AgentManager } from './agents.js';
 import { loadAssetBundle, resolveAssetsDir } from './assets.js';
+import { initOpenCode } from './opencode.js';
 import { handleClientMessage, WsHub } from './ws.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +47,21 @@ async function main(): Promise<void> {
   const hub = new WsHub();
   const agents = new AgentManager((msg) => hub.broadcast(msg));
   await agents.init();
+
+  // Boot the OpenCode runtime in the background — it spawns the `opencode`
+  // binary which can take a few seconds. We don't block server startup so
+  // the UI can show a "connecting…" state. WS handlers that need the client
+  // will throw a clear error until init completes.
+  initOpenCode()
+    .then(async () => {
+      app.log.info('opencode runtime ready');
+      try {
+        await agents.reattachPersisted();
+      } catch (err) {
+        app.log.error({ err }, 'reattachPersisted failed');
+      }
+    })
+    .catch((err: unknown) => app.log.error({ err }, 'opencode runtime failed to start'));
 
   // ── HTTP routes ────────────────────────────────────────────────────────────
   app.get('/api/health', async () => ({
@@ -81,7 +97,7 @@ async function main(): Promise<void> {
       hub.add(socket);
       app.log.info('ws connected');
 
-      socket.on('message', (raw) => {
+      socket.on('message', (raw: Buffer) => {
         let msg: ClientMessage;
         try {
           msg = JSON.parse(raw.toString()) as ClientMessage;

@@ -13,8 +13,10 @@
   "dependencies": {
     "@fastify/static": "^8.2.0",
     "@fastify/websocket": "^11.2.0",
+    "@opencode-ai/sdk": "^1.14.48",
     "@pixel-agents/protocol": "*",
     "fastify": "^5.7.0",
+    "opencode-ai": "^1.14.48",
     "pngjs": "^7.0.0"
   },
   "devDependencies": {

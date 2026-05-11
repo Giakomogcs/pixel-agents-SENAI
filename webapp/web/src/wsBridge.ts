@@ -60,6 +60,15 @@ function connect(): void {
 export function installWsBridge(): void {
   const api: VsCodeApiShim = {
     postMessage(msg: unknown) {
+      // Side-channel: intercept focusAgent clicks and surface a prompt input.
+      // The webview-ui sends `focusAgent` on character click; in the extension
+      // that focuses the terminal. Here we route it to our prompt overlay.
+      const m = msg as { type?: string; id?: number };
+      if (m?.type === 'focusAgent' && typeof m.id === 'number') {
+        window.dispatchEvent(
+          new CustomEvent('pixel-agents:openPrompt', { detail: { agentId: m.id } }),
+        );
+      }
       const payload = JSON.stringify(msg);
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(payload);

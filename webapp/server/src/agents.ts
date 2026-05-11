@@ -6,6 +6,7 @@
 
 import type { ServerMessage } from '@pixel-agents/protocol';
 
+import { COPILOT_PROVIDER_ID, COPILOT_DEFAULT_MODEL } from './constants.js';
 import { getOpenCodeClient, type OpenCodeEvent, type OpenCodeSession } from './opencode.js';
 import { type AgentsState, readAgents, writeAgents } from './persistence.js';
 
@@ -13,6 +14,7 @@ export interface RuntimeAgent {
   id: number;
   name: string;
   session: OpenCodeSession;
+  unsubscribe: () => void;
   palette: number;
   hueShift: number;
   seatId: string | null;
@@ -34,6 +36,52 @@ export class AgentManager {
     // avoids surprising the user with new Copilot calls.
   }
 
+  /**
+   * Re-subscribe to OpenCode events for every persisted agent so they keep
+   * streaming after a server restart. Safe to call multiple times — agents
+   * already in `this.agents` are skipped. Requires the OpenCode client to be
+   * ready and Copilot to be authenticated.
+   */
+  async reattachPersisted(): Promise<void> {
+    let client;
+    try {
+      client = getOpenCodeClient();
+    } catch {
+      return; // OpenCode not booted yet — caller can retry later.
+    }
+    if (!(await client.isAuthenticated(COPILOT_PROVIDER_ID))) return;
+
+    for (const persisted of this.state.agents) {
+      if (this.agents.has(persisted.id)) continue;
+      if (!persisted.sessionId) continue; // legacy entry without a session
+      const sessionId = persisted.sessionId;
+      const session = {
+        id: sessionId,
+        close: async () => {
+          /* OpenCode session lifecycle is managed elsewhere on re-attach */
+        },
+      };
+      const agent: RuntimeAgent = {
+        id: persisted.id,
+        name: persisted.name,
+        session,
+        unsubscribe: () => undefined,
+        palette: persisted.palette,
+        hueShift: persisted.hueShift,
+        seatId: persisted.seatId,
+      };
+      this.agents.set(agent.id, agent);
+      agent.unsubscribe = client.onEvent(sessionId, (e) => this.handleEvent(agent, e));
+    }
+    if (this.state.agents.length > 0) {
+      this.broadcast({
+        type: 'log',
+        level: 'info',
+        message: `Reattached ${this.state.agents.length.toString()} persisted agent session(s).`,
+      });
+    }
+  }
+
   emitExisting(): void {
     this.broadcast({
       type: 'existingAgents',
@@ -49,11 +97,11 @@ export class AgentManager {
 
   async spawn(): Promise<RuntimeAgent | null> {
     const client = getOpenCodeClient();
-    if (!(await client.isAuthenticated('copilot'))) {
+    if (!(await client.isAuthenticated(COPILOT_PROVIDER_ID))) {
       this.broadcast({
         type: 'log',
         level: 'warn',
-        message: 'Cannot spawn agent: Copilot is not authenticated. Open Settings → Copilot.',
+        message: 'Cannot spawn agent: Copilot is not authenticated. Open Settings → Connect Copilot.',
       });
       return null;
     }
@@ -61,7 +109,7 @@ export class AgentManager {
     const id = this.state.nextId++;
     let session: OpenCodeSession;
     try {
-      session = await client.createSession('copilot');
+      session = await client.createSession({ title: `Agent ${id.toString()}` });
     } catch (err) {
       this.broadcast({
         type: 'log',
@@ -75,13 +123,14 @@ export class AgentManager {
       id,
       name: `Agent ${id.toString()}`,
       session,
+      unsubscribe: () => undefined,
       palette: id % 6,
       hueShift: 0,
       seatId: null,
     };
     this.agents.set(id, agent);
 
-    client.onEvent(session.id, (e) => this.handleEvent(agent, e));
+    agent.unsubscribe = client.onEvent(session.id, (e) => this.handleEvent(agent, e));
 
     this.state.agents.push({
       id: agent.id,
@@ -108,6 +157,7 @@ export class AgentManager {
     const agent = this.agents.get(id);
     if (agent) {
       try {
+        agent.unsubscribe();
         await agent.session.close();
       } catch (err) {
         console.warn(`[agents] close() failed for ${id.toString()}:`, err);
@@ -122,7 +172,11 @@ export class AgentManager {
   async sendPrompt(id: number, text: string): Promise<void> {
     const agent = this.agents.get(id);
     if (!agent) return;
-    await getOpenCodeClient().sendPrompt(agent.session.id, text);
+    await getOpenCodeClient().sendPrompt(agent.session.id, text, {
+      providerId: COPILOT_PROVIDER_ID,
+      modelId: COPILOT_DEFAULT_MODEL,
+    });
+    this.broadcast({ type: 'agentStatus', id, status: 'active' });
   }
 
   async saveSeats(
