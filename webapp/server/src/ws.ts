@@ -11,6 +11,12 @@ import type { ClientMessage, ServerMessage } from '@pixel-agents/protocol';
 import type { AgentManager } from './agents.js';
 import type { AssetBundle } from './assets.js';
 import { COPILOT_PROVIDER_ID } from './constants.js';
+import {
+  markFactoryActivity,
+  readFactoryState,
+  resetFactoryState,
+  runPedidoScenario,
+} from './factory.js';
 import { getOpenCodeClient, type OpenCodeClientApi } from './opencode.js';
 import { APP_VERSION } from './paths.js';
 
@@ -257,6 +263,27 @@ export async function handleClientMessage(
         message: `[webapp] ${msg.type} not implemented yet`,
       });
       break;
+
+    case 'factoryScenario': {
+      if (msg.scenario === 'pedido') {
+        await runPedidoScenario(agents, msg.sku, msg.qty, (m) => hub.broadcast(m));
+      }
+      break;
+    }
+
+    case 'factoryReset': {
+      await resetFactoryState();
+      markFactoryActivity();
+      const state = await readFactoryState();
+      hub.broadcast({ type: 'factoryState', ...state });
+      break;
+    }
+
+    case 'factoryGetState': {
+      const state = await readFactoryState();
+      hub.send(ws, { type: 'factoryState', ...state });
+      break;
+    }
 
     default: {
       const _exhaustive: never = msg;

@@ -6,7 +6,7 @@
 
 import type { ServerMessage } from '@pixel-agents/protocol';
 
-import { COPILOT_DEFAULT_MODEL,COPILOT_PROVIDER_ID } from './constants.js';
+import { COPILOT_DEFAULT_MODEL, COPILOT_PROVIDER_ID } from './constants.js';
 import { getOpenCodeClient, type OpenCodeEvent, type OpenCodeSession } from './opencode.js';
 import { type AgentsState, readAgents, writeAgents } from './persistence.js';
 
@@ -94,7 +94,8 @@ export class AgentManager {
   }
 
   emitExisting(): void {
-    const agentMeta: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
+    const agentMeta: Record<number, { palette: number; hueShift: number; seatId: string | null }> =
+      {};
     const folderNames: Record<number, string> = {};
     for (const a of this.state.agents) {
       agentMeta[a.id] = { palette: a.palette, hueShift: a.hueShift, seatId: a.seatId };
@@ -114,13 +115,14 @@ export class AgentManager {
       this.broadcast({
         type: 'log',
         level: 'warn',
-        message: 'Cannot spawn agent: Copilot is not authenticated. Open Settings → Connect Copilot.',
+        message:
+          'Cannot spawn agent: Copilot is not authenticated. Open Settings → Connect Copilot.',
       });
       return null;
     }
 
     const id = this.state.nextId++;
-    const name = (opts.name?.trim() || `Agent ${id.toString()}`);
+    const name = opts.name?.trim() || `Agent ${id.toString()}`;
     const providerId = opts.providerId || COPILOT_PROVIDER_ID;
     const modelId = opts.modelId || COPILOT_DEFAULT_MODEL;
 
@@ -182,7 +184,13 @@ export class AgentManager {
         level: 'info',
         message: `Sending initial prompt to "${name}" via ${providerId}/${modelId} (${initialPrompt.length.toString()} chars)`,
       });
-      this.broadcast({ type: 'agentMessage', agentId: agent.id, role: 'user', text: initialPrompt, final: true });
+      this.broadcast({
+        type: 'agentMessage',
+        agentId: agent.id,
+        role: 'user',
+        text: initialPrompt,
+        final: true,
+      });
       try {
         await client.sendPrompt(session.id, initialPrompt, { providerId, modelId });
         this.broadcast({ type: 'agentStatus', id: agent.id, status: 'active' });
@@ -239,6 +247,50 @@ export class AgentManager {
     }
   }
 
+  /**
+   * List names of all known agents (live + persisted). Used by the factory
+   * bootstrap to skip agents that already exist.
+   */
+  listNames(): string[] {
+    const names = new Set<string>();
+    for (const a of this.state.agents) names.add(a.name);
+    for (const a of this.agents.values()) names.add(a.name);
+    return [...names];
+  }
+
+  /** Look up a live agent by display name (case-sensitive). */
+  findByName(name: string): RuntimeAgent | null {
+    for (const a of this.agents.values()) {
+      if (a.name === name) return a;
+    }
+    return null;
+  }
+
+  /**
+   * Update the provider/model for an agent (live + persisted) by name. Used
+   * by the factory bootstrap to fix up agents whose persisted modelId no
+   * longer exists on the connected provider (e.g. after an OpenCode upgrade).
+   */
+  async updateAgentModel(name: string, providerId: string, modelId: string): Promise<boolean> {
+    let changed = false;
+    for (const a of this.agents.values()) {
+      if (a.name === name && (a.providerId !== providerId || a.modelId !== modelId)) {
+        a.providerId = providerId;
+        a.modelId = modelId;
+        changed = true;
+      }
+    }
+    for (const a of this.state.agents) {
+      if (a.name === name && (a.providerId !== providerId || a.modelId !== modelId)) {
+        a.providerId = providerId;
+        a.modelId = modelId;
+        changed = true;
+      }
+    }
+    if (changed) await writeAgents(this.state);
+    return changed;
+  }
+
   async saveSeats(
     seats: Record<number, { palette: number; hueShift: number; seatId: string | null }>,
   ): Promise<void> {
@@ -291,7 +343,13 @@ export class AgentManager {
       case 'turn_end':
         this.broadcast({ type: 'agentToolsClear', id: agent.id });
         this.broadcast({ type: 'agentStatus', id: agent.id, status: 'waiting' });
-        this.broadcast({ type: 'agentMessage', agentId: agent.id, role: 'assistant', text: '', final: true });
+        this.broadcast({
+          type: 'agentMessage',
+          agentId: agent.id,
+          role: 'assistant',
+          text: '',
+          final: true,
+        });
         this.broadcast({ type: 'agentTurnEnd', agentId: agent.id });
         break;
       case 'text_delta':

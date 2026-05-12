@@ -97,6 +97,7 @@ export async function readLayoutOrDefault(assetsDir: string): Promise<unknown | 
   const saved = await readLayout();
   if (saved) return saved;
   const candidates = [
+    path.join(assetsDir, 'default-layout-factory.json'),
     path.join(assetsDir, 'default-layout-1.json'),
     path.join(assetsDir, 'default-layout.json'),
   ];

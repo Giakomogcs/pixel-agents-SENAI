@@ -57,6 +57,13 @@ export interface OpenCodeClientApi {
   pollOAuth(providerId: string): Promise<boolean>;
   isAuthenticated(providerId: string): Promise<boolean>;
   logout(providerId: string): Promise<void>;
+  /**
+   * Register a callback invoked when the (single) background OAuth device-flow
+   * `callback` resolves — i.e. the user has approved on github.com and a
+   * token has been stored. Used to push `copilotAuthComplete` immediately
+   * instead of waiting for the next poll tick.
+   */
+  onAuthComplete(handler: (providerId: string, ok: boolean) => void): () => void;
 
   listProviders(): Promise<{ providers: ProviderInfo[]; defaultProviderId: string; defaultModelId: string }>;
 
@@ -88,10 +95,49 @@ class RealOpenCodeClient implements OpenCodeClientApi {
 
   // ── OAuth ────────────────────────────────────────────────────────────────
 
+  /**
+   * Background callback promises per provider. The opencode-ai
+   * `provider.oauth.callback` endpoint for the GitHub Copilot device flow
+   * is a SINGLE long-running call: it loops internally polling GitHub's
+   * token endpoint until the user types the code on github.com/login/device
+   * and approves. We must trigger it exactly ONCE per `authorize` — calling
+   * it repeatedly each tick spawns competing polls and never resolves the
+   * UI. `pollOAuth` then just checks `isAuthenticated()`.
+   */
+  private pendingCallbacks = new Map<string, Promise<boolean>>();
+  private callbackMethodIndex = new Map<string, number>();
+  private authCompleteHandlers = new Set<(providerId: string, ok: boolean) => void>();
+
+  onAuthComplete(handler: (providerId: string, ok: boolean) => void): () => void {
+    this.authCompleteHandlers.add(handler);
+    return () => {
+      this.authCompleteHandlers.delete(handler);
+    };
+  }
+
   async startOAuth(providerId: string): Promise<OAuthAuthorizeResult> {
+    // Discover which method index corresponds to OAuth for this provider.
+    // Hardcoding 0 is fragile because providers may expose multiple auth
+    // methods (e.g. "OAuth" + "API key") in any order.
+    let method = 0;
+    try {
+      const methodsRes = (await this.sdk.provider.auth()) as {
+        data?: Record<string, { type: string; label: string }[]>;
+      };
+      const methods = methodsRes.data?.[providerId] ?? [];
+      console.log(
+        `[opencode] auth methods for ${providerId}:`,
+        methods.map((m, i) => `${i.toString()}=${m.type}:${m.label}`).join(', ') || '(none)',
+      );
+      const idx = methods.findIndex((m) => m.type === 'oauth');
+      if (idx >= 0) method = idx;
+    } catch (err) {
+      console.warn(`[opencode] failed to list auth methods for ${providerId}:`, err);
+    }
+
     const res = await this.sdk.provider.oauth.authorize({
       path: { id: providerId },
-      body: { method: 0 },
+      body: { method },
     });
     if (res.error || !res.data) {
       throw new Error(
@@ -99,33 +145,66 @@ class RealOpenCodeClient implements OpenCodeClientApi {
       );
     }
     const { url, instructions } = res.data;
+    console.log(`[opencode] authorize OK provider=${providerId} method=${method.toString()} url=${url}`);
+
+    // Kick off the (single, long-running) device-flow poll in the background.
+    // It resolves when the user approves on GitHub and the token is stored.
+    this.callbackMethodIndex.set(providerId, method);
+    this.startCallbackLoop(providerId, method);
+
     return { verificationUri: url, userCode: extractUserCode(instructions ?? ''), instructions: instructions ?? '' };
   }
 
-  async pollOAuth(providerId: string): Promise<boolean> {
-    // First, the cheap & reliable check: is the provider already in the
-    // `connected` list? If so the user finished the flow on github.com and
-    // we don't need to call /callback at all.
-    if (await this.isAuthenticated(providerId)) return true;
+  private startCallbackLoop(providerId: string, method: number): void {
+    // If a prior callback is already in-flight (e.g. retry after refresh),
+    // don't stack a second one — the opencode server only holds ONE pending
+    // entry per provider and a second authorize would have replaced it.
+    if (this.pendingCallbacks.has(providerId)) return;
 
-    // Otherwise, ping the SDK's callback endpoint. For GitHub device flow
-    // this returns 400 BadRequest while the user hasn't authorized yet —
-    // we treat ALL errors as "not done" rather than throwing, because the
-    // authoritative signal is `connected` above. Only a successful `true`
-    // response means we're done.
-    try {
-      const res = await this.sdk.provider.oauth.callback({
-        path: { id: providerId },
-        body: { method: 0 },
-      });
-      if (res.error) return false;
-      if (res.data === true) return true;
-      // After a callback that returned data===true we expect connected to
-      // update; re-check to be safe.
-      return await this.isAuthenticated(providerId);
-    } catch {
-      return false;
-    }
+    const promise = (async () => {
+      try {
+        console.log(`[opencode] oauth.callback START provider=${providerId} method=${method.toString()}`);
+        const res = (await this.sdk.provider.oauth.callback({
+          path: { id: providerId },
+          body: { method },
+        })) as { error?: unknown; data?: unknown; response?: { status?: number } };
+        console.log(
+          `[opencode] oauth.callback RESPONSE provider=${providerId}`,
+          'status=', res.response?.status,
+          'data=', JSON.stringify(res.data),
+          'error=', JSON.stringify(res.error),
+        );
+        if (res.error) {
+          console.warn(`[opencode] oauth.callback for ${providerId} errored:`, res.error);
+          return false;
+        }
+        const ok = await this.isAuthenticated(providerId);
+        console.log(`[opencode] isAuthenticated(${providerId}) → ${String(ok)}`);
+        return ok;
+      } catch (err) {
+        console.warn(`[opencode] oauth.callback for ${providerId} threw:`, err);
+        return false;
+      } finally {
+        this.pendingCallbacks.delete(providerId);
+      }
+    })();
+    this.pendingCallbacks.set(providerId, promise);
+    void promise.then((ok) => {
+      for (const h of this.authCompleteHandlers) {
+        try {
+          h(providerId, ok);
+        } catch (err) {
+          console.warn('[opencode] authComplete handler threw:', err);
+        }
+      }
+    });
+  }
+
+  async pollOAuth(providerId: string): Promise<boolean> {
+    // The authoritative signal — the background `callback` updates the
+    // opencode auth store, which makes `provider.list().connected` include
+    // this provider. We never call `callback` from here.
+    return this.isAuthenticated(providerId);
   }
 
   async isAuthenticated(providerId: string): Promise<boolean> {

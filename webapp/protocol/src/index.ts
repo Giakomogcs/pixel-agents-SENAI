@@ -48,7 +48,12 @@ export type ClientMessage =
   | { type: 'startCopilotAuth' }
   | { type: 'pollCopilotAuth' }
   | { type: 'logoutCopilot' }
-  | { type: 'getCopilotStatus' };
+  | { type: 'getCopilotStatus' }
+
+  // Factory POC (SENAI) — tablet → server scenario triggers
+  | { type: 'factoryScenario'; scenario: 'pedido'; sku: string; qty: number }
+  | { type: 'factoryReset' }
+  | { type: 'factoryGetState' };
 
 // ── Server → Client ──────────────────────────────────────────────────────────
 
@@ -129,6 +134,49 @@ export type ServerMessage =
   | { type: 'agentPrompt'; agentId: number; text: string }
   | { type: 'agentMessage'; agentId: number; role: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'agentTurnEnd'; agentId: number }
-  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
+  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
+
+  // Factory POC (SENAI) — broadcast factory state to TV + tablet
+  | {
+      type: 'factoryState';
+      orders: FactoryOrder[];
+      inventory: Record<string, FactoryInventoryItem>;
+      production: FactoryOp[];
+      kpis: FactoryKpis;
+    };
+
+// ── Factory POC types ────────────────────────────────────────────────────────
+
+export interface FactoryOrder {
+  id: number;
+  sku: string;
+  qty: number;
+  status: 'pending' | 'accepted' | 'in_production' | 'done' | 'rejected';
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface FactoryInventoryItem {
+  name: string;
+  stock: number;
+  minStock: number;
+  unit: string;
+}
+
+export interface FactoryOp {
+  opId: number;
+  orderId: number;
+  sku: string;
+  qty: number;
+  status: 'queued' | 'running' | 'done';
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface FactoryKpis {
+  ordersToday: number;
+  leadTimeAvgMin: number;
+  oeePercent: number;
+}
 
 export type AnyMessage = ClientMessage | ServerMessage;
