@@ -67,6 +67,7 @@
    - Cria 3 agentes (Vendas, PCP, Produção) com `name`, `prompt` lido de `prompts/*.md`, posição (seat) fixa do layout
    - Idempotente: se já existem com mesmo nome, reusa
    - Chamado uma vez no startup do server
+   - **Saudação no spawn**: após criar cada agente (apenas se novo, não em reuso), dispara `sendPrompt` com mensagem curta de apresentação por papel — ex.: Vendas "Apresente-se em 1 frase como atendente de Vendas da Fábrica SENAI", PCP "Apresente-se em 1 frase como responsável de PCP", Produção "Apresente-se em 1 frase como operador de Produção". Resultado visual: cada personagem aparece (efeito matrix), anda até seu seat, dispara o balão de "waiting" (✓ verde) + chime quando termina o turno — comunica vida sem precisar de animação nova de aceno. Saudações são serializadas (1 agente por vez) para não saturar a TV com 3 balões simultâneos no boot.
 
 ### Fase 3 — Tablet UI (Dia 2 manhã, ~3h) — depende de Fase 2
 
