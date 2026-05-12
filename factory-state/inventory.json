@@ -1,0 +1,38 @@
+{
+  "PAR-M8X40-INX-A2": {
+    "name": "Parafuso sextavado M8x40 inox A2 (DIN 933)",
+    "stock": 1200,
+    "minStock": 200,
+    "unit": "pç"
+  },
+  "FLG-DN50-PN16-CS": {
+    "name": "Flange sobreposta DN50 PN16 aço carbono (ABNT NBR 7675)",
+    "stock": 48,
+    "minStock": 12,
+    "unit": "pç"
+  },
+  "ROL-6204-2RS": {
+    "name": "Rolamento rígido de esferas 6204-2RS (DIN 625)",
+    "stock": 96,
+    "minStock": 24,
+    "unit": "pç"
+  },
+  "EIX-AISI1045-D25-L500": {
+    "name": "Eixo retificado AISI 1045 Ø25mm × 500mm",
+    "stock": 32,
+    "minStock": 8,
+    "unit": "pç"
+  },
+  "JUN-NBR-DN50": {
+    "name": "Junta NBR para flange DN50",
+    "stock": 150,
+    "minStock": 30,
+    "unit": "pç"
+  },
+  "PIN-EL-D6-L40-CL10.9": {
+    "name": "Pino elástico Ø6 × 40 classe 10.9 (DIN 1481)",
+    "stock": 800,
+    "minStock": 150,
+    "unit": "pç"
+  }
+}
